@@ -7,7 +7,16 @@
     <input type="email"  name="email"    placeholder="Email"     required>
     <input type="password" name="password" placeholder="Mot de passe" required>
     <button type="submit">Se connecter</button>
-  </form>
-  <p><a href="/register">Pas encore inscrit ? S'enregistrer</a></p>
-</body>
-</html>
+  </form> <p><a href="/register">Pas encore inscrit ? S'enregistrer</a></p> <script> document.getElementById('loginForm').addEventListener('submit', async e => {</body> e.preventDefault();</html> const email = document.getElementById('email').value; const password = 
+      document.getElementById('password').value; try {
+        const res = await fetch('http://18.245.175.14:8000/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password })
+        });
+        if (!res.ok) throw new Error('Identifiants invalides'); const { token } = await res.json(); localStorage.setItem('rcvo_token', token); window.location.href = 'index.html';
+      } catch (err) {
+        document.getElementById('error').textContent = err.message;
+      }
+    });
+    // Toggle œil
+    document.getElementById('togglePwd').onclick = () => { const pwd = document.getElementById('password'); pwd.type = pwd.type === 'password' ? 'text' : 'password';
+    };
+  </script>
