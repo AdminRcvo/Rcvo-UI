@@ -1,0 +1,15 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - echo "Rien à installer pour le site statique"
+    build:
+      commands:
+        - echo "Rien à compiler, on passe"
+  artifacts:
+    baseDirectory: "/"
+    files:
+      - "**/*"
+  cache:
+    paths: []
