@@ -7,10 +7,11 @@
     body { font-family: sans-serif; margin: 0; }
     nav { background: #007BFF; padding: 1rem; }
     nav a { color: #fff; margin-right: 1rem; text-decoration: none; }
-    main { padding: 2rem; }
-    form div { margin-bottom: 1rem; }
-    button { cursor: pointer; }
-    #error { color: red; }
+    main { padding: 2rem; max-width: 400px; margin: auto; }
+    label { display: block; margin-top: 1rem; }
+    input { width: 100%; padding: .5rem; margin-top: .25rem; }
+    button { margin-top: 1rem; padding: .5rem 1rem; background: #007BFF; color: #fff; border: none; cursor: pointer; }
+    #error { color: red; margin-top: 1rem; }
   </style>
 </head>
 <body>
@@ -24,48 +25,50 @@
   <main>
     <h1>Connexion</h1>
     <form id="loginForm">
-      <div>
-        <label for="email">Email :</label><br/>
-        <input type="email" id="email" required />
-      </div>
-      <div>
-        <label for="password">Mot de passe :</label><br/>
-        <input type="password" id="password" required />
-        <button type="button" id="togglePwd">👁️</button>
-      </div>
-      <div>
-        <button type="submit">Se connecter</button>
-      </div>
-      <div>
-        <span id="error"></span>
-      </div>
+      <label for="email">Email :</label>
+      <input type="email" id="email" required />
+
+      <label for="password">Mot de passe :</label>
+      <input type="password" id="password" required />
+
+      <button type="submit">Se connecter</button>
     </form>
+
+    <div id="error"></div>
   </main>
 
   <script>
-    document.getElementById('togglePwd').onclick = () => {
-      const pwd = document.getElementById('password');
-      pwd.type = pwd.type === 'password' ? 'text' : 'password';
-    };
+    const errorDiv = document.getElementById('error');
+
     document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
+      errorDiv.textContent = '';
+
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
+
       try {
-        const res = await fetch('http://18.245.175.14:8000/login', {
+        const res = await fetch('https://api.rcvo-crm-auto.com/api/admin/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ email, password })
         });
-        if (!res.ok) throw new Error('Identifiants invalides');
-        const { token } = await res.json();
-        localStorage.setItem('rcvo_token', token);
+
+        if (!res.ok) {
+          const { message } = await res.json();
+          throw new Error(message || 'Échec de la connexion');
+        }
+
+        // Si tout va bien, on redirige vers la page d'accueil
         window.location.href = 'index.html';
+
       } catch (err) {
-        document.getElementById('error').textContent = err.message;
+        errorDiv.textContent = err.message;
       }
     });
   </script>
 
 </body>
 </html>
+
