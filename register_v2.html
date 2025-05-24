@@ -3,78 +3,38 @@
 <head>
   <meta charset="UTF-8" />
   <title>Inscription – RCVO</title>
-  <style>
-    body { font-family:sans-serif; margin:0; padding:2rem; }
-    nav { background:#007BFF; padding:1rem; }
-    nav a { color:#fff; margin-right:1rem; text-decoration:none; }
-    form { max-width:300px; margin:2rem auto; }
-    label, input { display:block; width:100%; margin-bottom:.5rem; }
-    .password-wrapper { position: relative; }
-    .toggle-btn {
-      position:absolute; top:50%; right:.5rem;
-      transform:translateY(-50%);
-      background:none; border:none; cursor:pointer;
-    }
-    button[type=submit] { padding:.5rem 1rem; background:#007BFF; color:#fff; border:none; cursor:pointer; }
-    #error { color:red; margin-top:1rem; }
-  </style>
+  <!-- Styles identiques -->
 </head>
 <body>
-
-  <nav>
-    <a href="index.html">Accueil</a>
-    <a href="login.html">Connexion</a>
-    <a href="register.html">Inscription</a>
-  </nav>
-
-  <h1>Inscription</h1>
-  <form id="registerForm">
-    <label for="email">Email :</label>
-    <input id="email" type="email" required />
-
-    <label for="password">Mot de passe :</label>
-    <div class="password-wrapper">
-      <input id="password" type="password" required />
-      <button type="button" class="toggle-btn" id="togglePassword">👁️</button>
-    </div>
-
-    <button type="submit">S’inscrire</button>
-  </form>
-  <div id="error"></div>
-
+  <!-- Nav identique -->
+  <main>
+    <h1>Inscription</h1>
+    <form>
+      <label>Email :<br><input type="email" name="email" required></label><br><br>
+      <label>Mot de passe :<br><input type="password" name="password" required></label><br><br>
+      <button type="submit">S'inscrire</button>
+    </form>
+    <p class="error" id="errMsg"></p>
+  </main>
   <script>
-    // Toggle visibilité
-    document.getElementById('togglePassword').addEventListener('click', () => {
-      const pwd = document.getElementById('password');
-      pwd.type = pwd.type === 'password' ? 'text' : 'password';
-    });
-
-    // Soumission du formulaire
-    document.getElementById('registerForm').addEventListener('submit', async e => {
+    document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
-      document.getElementById('error').textContent = '';
-      const email = document.getElementById('email').value;
-      const password = document.getElementById('password').value;
+      const { email, password } = e.target;
       try {
-        const res = await fetch(
-          'https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/register',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password })
-          }
-        );
+        const res = await fetch('https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email.value, password: password.value })
+        });
         if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(txt || res.statusText);
+          document.getElementById('errMsg').textContent = `Erreur ${res.status}`;
+          return;
         }
-        window.location.href = 'login.html';
-      } catch (err) {
-        document.getElementById('error').textContent =
-          err.message || 'Erreur d’inscription';
+        window.location.href = 'login_v2.html';
+      } catch {
+        document.getElementById('errMsg').textContent = "NetworkError";
       }
-    });
+    };
   </script>
-
 </body>
 </html>

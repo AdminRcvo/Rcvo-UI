@@ -4,19 +4,11 @@
   <meta charset="UTF-8" />
   <title>Connexion – RCVO</title>
   <style>
-    body { font-family:sans-serif; margin:0; padding:2rem; }
-    nav { background:#007BFF; padding:1rem; }
-    nav a { color:#fff; margin-right:1rem; text-decoration:none; }
-    form { max-width:300px; margin:2rem auto; }
-    label, input { display:block; width:100%; margin-bottom:.5rem; }
-    .password-wrapper { position:relative; }
-    .toggle-btn {
-      position:absolute; top:50%; right:.5rem;
-      transform:translateY(-50%);
-      background:none; border:none; cursor:pointer;
-    }
-    button[type=submit] { padding:.5rem 1rem; background:#007BFF; color:#fff; border:none; }
-    #error { color:red; margin-top:1rem; }
+    body { font-family: sans-serif; margin: 0; }
+    nav { background: #007BFF; padding: 1rem; }
+    nav a { color: #fff; margin-right: 1rem; text-decoration: none; }
+    main { padding: 2rem; max-width: 400px; margin: auto; }
+    .error { color: red; }
   </style>
 </head>
 <body>
@@ -27,59 +19,56 @@
     <a href="register_v2.html">Inscription</a>
   </nav>
 
-  <h1>Connexion</h1>
-  <form id="loginForm">
-    <label for="email">Email :</label>
-    <input id="email" type="email" required />
-
-    <label for="password">Mot de passe :</label>
-    <div class="password-wrapper">
-      <input id="password" type="password" required />
-      <button type="button" class="toggle-btn" id="togglePassword">👁️</button>
-    </div>
-
-    <button type="submit">Se connecter</button>
-  </form>
-  <div id="error"></div>
+  <main>
+    <h1>Connexion</h1>
+    <form>
+      <label>Email :<br>
+        <input type="email" name="email" required>
+      </label><br><br>
+      <label>Mot de passe :<br>
+        <input type="password" name="password" required>
+        <button type="button" id="togglePwd">👁️</button>
+      </label><br><br>
+      <button type="submit">Se connecter</button>
+    </form>
+    <p class="error" id="errMsg"></p>
+  </main>
 
   <script>
-    // Toggle visibilité
-    document.getElementById('togglePassword').addEventListener('click', () => {
-      const pwd = document.getElementById('password');
-      pwd.type = pwd.type === 'password' ? 'text' : 'password';
-    });
+    // bascule affichage du mot de passe
+    document.getElementById('togglePwd').onclick = () => {
+      const inp = document.querySelector('input[name="password"]');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    };
 
-    document.getElementById('loginForm').addEventListener('submit', async e => {
+    // intercepte la soumission
+    document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
-      const errorDiv = document.getElementById('error');
-      errorDiv.textContent = '';
-      const email = document.getElementById('email').value;
-      const password = document.getElementById('password').value;
-      console.log('Envoi du login:', email, password);
+      const email = e.target.email.value;
+      const password = e.target.password.value;
+      console.log("[login] submit", email);
+      document.getElementById('errMsg').textContent = '';
+
       try {
-        const res = await fetch(
-          'https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/login',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password })
-          }
-        );
-        console.log('Réponse status:', res.status);
+        const res = await fetch('https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        console.log("[login] status", res.status);
         if (!res.ok) {
-          const txt = await res.text();
-          console.error('Login échoué:', txt);
-          throw new Error(txt || res.statusText);
+          const err = await res.text();
+          document.getElementById('errMsg').textContent = `Erreur ${res.status}`;
+          return;
         }
-        const json = await res.json();
-        console.log('Login OK, token reçu:', json.token);
-        alert('Connexion réussie, redirection…');
+        const { token } = await res.json();
+        localStorage.setItem('jwt', token);
         window.location.href = 'index.html';
       } catch (err) {
         console.error(err);
-        errorDiv.textContent = err.message || 'Erreur de connexion';
+        document.getElementById('errMsg').textContent = "NetworkError";
       }
-    });
+    };
   </script>
 
 </body>
