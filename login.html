@@ -4,13 +4,19 @@
   <meta charset="UTF-8" />
   <title>Connexion – RCVO</title>
   <style>
-    body { font-family: sans-serif; margin: 0; padding: 2rem; }
-    nav { background: #007BFF; padding: 1rem; }
-    nav a { color: #fff; margin-right: 1rem; text-decoration: none; }
-    form { max-width: 300px; margin-top: 2rem; }
-    label, input { display: block; width: 100%; margin-bottom: .5rem; }
-    button { padding: .5rem 1rem; background: #007BFF; color: #fff; border: none; }
-    #error { color: red; margin-top: 1rem; }
+    body { font-family:sans-serif; margin:0; padding:2rem; }
+    nav { background:#007BFF; padding:1rem; }
+    nav a { color:#fff; margin-right:1rem; text-decoration:none; }
+    form { max-width:300px; margin:2rem auto; }
+    label, input { display:block; width:100%; margin-bottom:.5rem; }
+    .password-wrapper { position: relative; }
+    .toggle-btn {
+      position:absolute; top:50%; right:.5rem;
+      transform:translateY(-50%);
+      background:none; border:none; cursor:pointer;
+    }
+    button[type=submit] { padding:.5rem 1rem; background:#007BFF; color:#fff; border:none; cursor:pointer; }
+    #error { color:red; margin-top:1rem; }
   </style>
 </head>
 <body>
@@ -25,13 +31,25 @@
   <form id="loginForm">
     <label for="email">Email :</label>
     <input id="email" type="email" required />
+
     <label for="password">Mot de passe :</label>
-    <input id="password" type="password" required />
+    <div class="password-wrapper">
+      <input id="password" type="password" required />
+      <button type="button" class="toggle-btn" id="togglePassword">👁️</button>
+    </div>
+
     <button type="submit">Se connecter</button>
   </form>
   <div id="error"></div>
 
   <script>
+    // Toggle visibilité
+    document.getElementById('togglePassword').addEventListener('click', () => {
+      const pwd = document.getElementById('password');
+      pwd.type = pwd.type === 'password' ? 'text' : 'password';
+    });
+
+    // Soumission du formulaire
     document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
       document.getElementById('error').textContent = '';
