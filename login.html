@@ -33,36 +33,30 @@
 
       <button type="submit">Se connecter</button>
     </form>
-
     <div id="error"></div>
   </main>
 
   <script>
+    const API = "http://${EB_URL}/api";
     const errorDiv = document.getElementById('error');
 
     document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
       errorDiv.textContent = '';
-
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
-
       try {
-        const res = await fetch('https://api.rcvo-crm-auto.com/api/admin/login', {
+        const res = await fetch(`${API}/admin/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify({ email, password })
         });
-
         if (!res.ok) {
           const { message } = await res.json();
           throw new Error(message || 'Échec de la connexion');
         }
-
-        // Si tout va bien, on redirige vers la page d'accueil
+        // Tout va bien : redirection vers l'accueil
         window.location.href = 'index.html';
-
       } catch (err) {
         errorDiv.textContent = err.message;
       }
@@ -71,4 +65,3 @@
 
 </body>
 </html>
-
