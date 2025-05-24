@@ -1,14 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Connexion – RCVO</title>
   <style>
-    body { font-family: sans-serif; margin: 0; }
-    nav { background: #007BFF; padding: 1rem; }
-    nav a { color: #fff; margin-right: 1rem; text-decoration: none; }
-    main { padding: 2rem; max-width: 400px; margin: auto; }
-    .error { color: red; }
+    body { font-family: sans-serif; margin:0; padding:2rem; }
+    nav { background:#007BFF; padding:1rem; }
+    nav a { color:#fff; margin-right:1rem; text-decoration:none; }
+    main { max-width:320px; margin:2rem auto; }
+    .error { color:red; }
+    .pwd-wrap { position: relative; display:flex; }
+    .pwd-wrap button { background:none; border:none; cursor:pointer; margin-left:-2rem; }
   </style>
 </head>
 <body>
@@ -21,52 +23,46 @@
 
   <main>
     <h1>Connexion</h1>
-    <form>
-      <label>Email :<br>
-        <input type="email" name="email" required>
-      </label><br><br>
-      <label>Mot de passe :<br>
-        <input type="password" name="password" required>
-        <button type="button" id="togglePwd">👁️</button>
-      </label><br><br>
+    <form id="form">
+      <label>Email<br><input type="email" name="email" required></label><br>
+      <label>Mot de passe<br>
+        <div class="pwd-wrap">
+          <input type="password" name="password" required>
+          <button type="button" id="toggle">👁️</button>
+        </div>
+      </label><br>
       <button type="submit">Se connecter</button>
     </form>
-    <p class="error" id="errMsg"></p>
+    <p class="error" id="err"></p>
   </main>
 
   <script>
-    // bascule affichage du mot de passe
-    document.getElementById('togglePwd').onclick = () => {
-      const inp = document.querySelector('input[name="password"]');
-      inp.type = inp.type === 'password' ? 'text' : 'password';
+    // œil
+    document.getElementById('toggle').onclick = () => {
+      const p = document.querySelector('[name="password"]');
+      p.type = p.type==='password'?'text':'password';
     };
-
-    // intercepte la soumission
-    document.querySelector('form').onsubmit = async e => {
+    // soumission
+    document.getElementById('form').onsubmit = async e => {
       e.preventDefault();
+      const err = document.getElementById('err');
+      err.textContent = '';
       const email = e.target.email.value;
       const password = e.target.password.value;
-      console.log("[login] submit", email);
-      document.getElementById('errMsg').textContent = '';
-
       try {
-        const res = await fetch('https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-        console.log("[login] status", res.status);
+        const res = await fetch(
+          'https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/login',
+          { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,password}) }
+        );
         if (!res.ok) {
-          const err = await res.text();
-          document.getElementById('errMsg').textContent = `Erreur ${res.status}`;
+          err.textContent = `Erreur ${res.status}`;
           return;
         }
-        const { token } = await res.json();
+        const {token} = await res.json();
         localStorage.setItem('jwt', token);
         window.location.href = 'index.html';
-      } catch (err) {
-        console.error(err);
-        document.getElementById('errMsg').textContent = "NetworkError";
+      } catch {
+        err.textContent = 'NetworkError';
       }
     };
   </script>

@@ -1,40 +1,56 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Inscription – RCVO</title>
-  <!-- Styles identiques -->
+  <style>
+    body { font-family: sans-serif; margin:0; padding:2rem; }
+    nav { background:#007BFF; padding:1rem; }
+    nav a { color:#fff; margin-right:1rem; text-decoration:none; }
+    main { max-width:320px; margin:2rem auto; }
+    .error { color:red; }
+  </style>
 </head>
 <body>
-  <!-- Nav identique -->
+
+  <nav>
+    <a href="index.html">Accueil</a>
+    <a href="login_v2.html">Connexion</a>
+    <a href="register_v2.html">Inscription</a>
+  </nav>
+
   <main>
     <h1>Inscription</h1>
-    <form>
-      <label>Email :<br><input type="email" name="email" required></label><br><br>
-      <label>Mot de passe :<br><input type="password" name="password" required></label><br><br>
-      <button type="submit">S'inscrire</button>
+    <form id="form">
+      <label>Email<br><input type="email" name="email" required></label><br>
+      <label>Mot de passe<br><input type="password" name="password" required></label><br>
+      <button type="submit">S’inscrire</button>
     </form>
-    <p class="error" id="errMsg"></p>
+    <p class="error" id="err"></p>
   </main>
+
   <script>
-    document.querySelector('form').onsubmit = async e => {
+    document.getElementById('form').onsubmit = async e => {
       e.preventDefault();
-      const { email, password } = e.target;
+      const err = document.getElementById('err');
+      err.textContent = '';
+      const email = e.target.email.value;
+      const password = e.target.password.value;
       try {
-        const res = await fetch('https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email.value, password: password.value })
-        });
+        const res = await fetch(
+          'https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/register',
+          { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,password}) }
+        );
         if (!res.ok) {
-          document.getElementById('errMsg').textContent = `Erreur ${res.status}`;
+          err.textContent = `Erreur ${res.status}`;
           return;
         }
         window.location.href = 'login_v2.html';
       } catch {
-        document.getElementById('errMsg').textContent = "NetworkError";
+        err.textContent = 'NetworkError';
       }
     };
   </script>
+
 </body>
 </html>
