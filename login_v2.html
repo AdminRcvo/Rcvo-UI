@@ -24,8 +24,12 @@
   <main>
     <h1>Connexion</h1>
     <form id="form">
-      <label>Email<br><input type="email" name="email" required></label><br>
-      <label>Mot de passe<br>
+      <label>
+        Email<br>
+        <input type="email" name="email" required>
+      </label><br>
+      <label>
+        Mot de passe<br>
         <div class="pwd-wrap">
           <input type="password" name="password" required>
           <button type="button" id="toggle">👁️</button>
@@ -37,31 +41,45 @@
   </main>
 
   <script>
-    // œil
+    console.log('[login] script chargé');
+    // toggle œil
     document.getElementById('toggle').onclick = () => {
+      console.log('[login] toggle œil');
       const p = document.querySelector('[name="password"]');
-      p.type = p.type==='password'?'text':'password';
+      p.type = p.type === 'password' ? 'text' : 'password';
     };
+
     // soumission
     document.getElementById('form').onsubmit = async e => {
       e.preventDefault();
+      console.log('[login] form submitted');
       const err = document.getElementById('err');
       err.textContent = '';
       const email = e.target.email.value;
       const password = e.target.password.value;
+      console.log('[login] payload', { email, password });
+
       try {
         const res = await fetch(
           'https://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/admin/login',
-          { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,password}) }
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+          }
         );
+        console.log('[login] response status', res.status);
         if (!res.ok) {
           err.textContent = `Erreur ${res.status}`;
           return;
         }
-        const {token} = await res.json();
+        const { token } = await res.json();
+        console.log('[login] received token', token);
         localStorage.setItem('jwt', token);
+        console.log('[login] redirect to index.html');
         window.location.href = 'index.html';
-      } catch {
+      } catch (e) {
+        console.error('[login] fetch error', e);
         err.textContent = 'NetworkError';
       }
     };
