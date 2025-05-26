@@ -24,12 +24,8 @@
   <main>
     <h1>Connexion</h1>
     <form id="form">
-      <label>
-        Email<br>
-        <input type="email" name="email" required>
-      </label><br>
-      <label>
-        Mot de passe<br>
+      <label>Email<br><input type="email" name="email" required></label><br>
+      <label>Mot de passe<br>
         <div class="pwd-wrap">
           <input type="password" name="password" required>
           <button type="button" id="toggle">👁️</button>
@@ -45,28 +41,27 @@
     document.getElementById('toggle').onclick = () => {
       const p = document.querySelector('[name="password"]');
       p.type = p.type==='password'?'text':'password';
+      console.log('[login] toggle œil');
     };
     document.getElementById('form').onsubmit = async e => {
       e.preventDefault();
-      console.log('[login] form submitted');
       const err = document.getElementById('err');
       err.textContent = '';
       const email = e.target.email.value;
       const password = e.target.password.value;
       console.log('[login] payload', { email, password });
       try {
-        const res = await fetch('/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-        console.log('[login] response status', res.status);
+        const res = await fetch(
+          'https://api.rcvo-crm-auto.com/api/admin/login',
+          { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,password}) }
+        );
+        console.log('[login] status', res.status);
         if (!res.ok) {
           err.textContent = `Erreur ${res.status}`;
           return;
         }
-        const { token } = await res.json();
-        console.log('[login] received token', token);
+        const {token} = await res.json();
+        console.log('[login] token reçu', token);
         localStorage.setItem('jwt', token);
         window.location.href = 'index.html';
       } catch (e) {
