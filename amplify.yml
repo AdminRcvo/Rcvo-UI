@@ -1,4 +1,5 @@
 version: 1
+
 frontend:
   phases:
     preBuild:
@@ -13,8 +14,10 @@ frontend:
       - "**/*"
   cache:
     paths: []
-  customRules:
-    - source: "/api/<*>"
-      target: "http://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/<*>"
-      status: 200
-      condition: null
+
+# ← customRules doit être au même niveau que frontend :
+customRules:
+  - source: "/api/<*>"
+    target: "http://Rcvo-Backend-env.eba-k3tjwhr3.eu-west-3.elasticbeanstalk.com/api/<*>"
+    status: 200
+    condition: null
