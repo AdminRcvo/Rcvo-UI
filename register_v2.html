@@ -14,13 +14,11 @@
   </style>
 </head>
 <body>
-
   <nav>
     <a href="index.html">Accueil</a>
     <a href="login_v2.html">Connexion</a>
     <a href="register_v2.html">Inscription</a>
   </nav>
-
   <main>
     <h1>Inscription</h1>
     <form id="form">
@@ -35,9 +33,7 @@
     </form>
     <p class="error" id="err"></p>
   </main>
-
   <script>
-    console.log('[register] script chargé');
     document.getElementById('toggle').onclick = () => {
       const p = document.querySelector('[name="password"]');
       p.type = p.type==='password'?'text':'password';
@@ -59,12 +55,10 @@
         }
         alert('Inscription réussie ! Vous pouvez vous connecter.');
         window.location.href = 'login_v2.html';
-      } catch (e) {
-        console.error('[register] fetch error', e);
+      } catch {
         err.textContent = 'NetworkError';
       }
     };
   </script>
-
 </body>
 </html>
