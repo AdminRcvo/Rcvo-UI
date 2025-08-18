@@ -19,7 +19,7 @@ env:
   REGION: eu-west-3
   BUCKET_STAGING: rcvo-transition
   BUCKET_PROD:    rcvo-officiel
-  KEY_PREFIX: ui/   # <- on déploie sous ce sous-dossier, rien d'autre n'est touché
+  KEY_PREFIX: ui/   # on déploie sous ce sous-dossier
 
 jobs:
   deploy:
@@ -50,12 +50,14 @@ jobs:
           aws-region: ${{ env.REGION }}
           role-to-assume: ${{ steps.pick.outputs.ROLE }}
 
-      # Install si lockfile présent (sinon saute)
+      # npm ci uniquement si package.json ET package-lock.json existent
       - name: Installer deps (si lockfile)
-        run: if [ -f package-lock.json ]; then npm ci; fi
+        if: ${{ hashFiles('package.json') != '' && hashFiles('package-lock.json') != '' }}
+        run: npm ci
 
-      # Build si script présent (sinon saute)
+      # build uniquement si package.json contient un script "build"
       - name: Build (si script présent)
+        if: ${{ hashFiles('package.json') != '' }}
         run: |
           if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
             npm run build
@@ -66,11 +68,17 @@ jobs:
       - name: Localiser le dossier à publier
         id: dist
         run: |
-          if [ -d dist ]; then D=dist;
-          elif [ -d build ]; then D=build;
-          else D=.; fi
-          echo "dir=$D" >> "$GITHUB_OUTPUT"
-          echo "Publier: $D"
+          set -e
+          for D in dist build public out .; do
+            if [ -d "$D" ]; then
+              echo "dir=$D" >> "$GITHUB_OUTPUT"
+              echo "Publier: $D"
+              exit 0
+            fi
+          done
+          # Si aucun des dossiers ci-dessus n'existe, on publiera la racine
+          echo "dir=." >> "$GITHUB_OUTPUT"
+          echo "Publier: ."
 
       - name: Prévisualisation (DRY-RUN)
         if: ${{ inputs.dryrun }}
@@ -84,13 +92,12 @@ jobs:
         run: |
           aws s3 sync "${{ steps.dist.outputs.dir }}/" "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" \
             --only-show-errors --exact-timestamps
-          echo "Contenu déployé vers s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}"
+          echo "Déployé vers s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}"
 
-      # (Optionnel) Invalidation CloudFront – désactivé tant qu'on ne connaît pas l'ID
+      # Invalidation CloudFront (désactivée tant qu'on n'a pas d'ID confirmé)
       # - name: Invalidation CloudFront
       #   run: aws cloudfront create-invalidation --distribution-id DXXXXXXXX --paths "/*"
 
       - name: Smoke test (statique)
         if: ${{ !inputs.dryrun }}
-        run: |
-          aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" | head -n 20
+        run: aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" | head -n 20
