@@ -18,6 +18,10 @@ on:
         description: "Préfixe dans le bucket (optionnel)"
         required: false
         default: ""
+      source_override:
+        description: "Dossier à publier (ex: dist, build, public, .)"
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -33,14 +37,13 @@ env:
   BUCKET_PROD: rcvo-officiel
   PREFIX_PROD: ui/
 
-  # Invalidation CloudFront (optionnel). Laisse vide si non utilisé.
+  # Invalidation CloudFront (optionnel)
   CF_DIST_ID_STAGING: ''
   CF_DIST_ID_PROD: ''
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
       ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
@@ -48,13 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # -------- Choix rôle/bucket/DRYRUN en fonction de la ref --------
+      # -------- Choix rôle/bucket/DRYRUN --------
       - name: Choisir rôle/bucket & DRYRUN
         id: pick
         shell: bash
         run: |
           set -euo pipefail
           REF="${GITHUB_REF}"
+
           FORCE="${{ github.event.inputs.force_dryrun || '' }}"
           BOVR="${{ github.event.inputs.bucket_override || '' }}"
           POVR="${{ github.event.inputs.prefix_override || '' }}"
@@ -73,7 +77,7 @@ jobs:
             DRYRUN="true"
           fi
 
-          # Forçage DRYRUN si demandé explicitement
+          # Forçage DRYRUN manuel
           if [[ -n "$FORCE" ]]; then
             if [[ "$FORCE" == "true" || "$FORCE" == "false" ]]; then
               DRYRUN="$FORCE"
@@ -88,29 +92,22 @@ jobs:
             echo "DRYRUN=$DRYRUN"
           } >> "$GITHUB_OUTPUT"
 
-          echo "REF=$REF"
-          echo "ROLE=$ROLE"
-          echo "BUCKET=$BUCKET"
-          echo "PREFIX=$PREFIX"
-          echo "CF_DIST_ID=$CF"
-          echo "DRYRUN=$DRYRUN"
-
           {
-            echo "### Ciblage retenu"
+            echo "### Ciblage"
             echo "- REF: \`$REF\`"
             echo "- ROLE: \`$ROLE\`"
             echo "- S3: \`s3://$BUCKET/$PREFIX\`"
             echo "- DRYRUN: \`$DRYRUN\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # -------- Auth AWS via OIDC --------
+      # -------- AWS via OIDC --------
       - name: Configurer AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.REGION }}
           role-to-assume: ${{ steps.pick.outputs.ROLE }}
 
-      # -------- Node / build (facultatif, robuste) --------
+      # -------- Node / build (facultatif) --------
       - name: Installer Node.js
         uses: actions/setup-node@v4
         with:
@@ -131,20 +128,33 @@ jobs:
           if [[ -f package.json ]] && jq -e '.scripts.build' package.json >/dev/null; then
             npm run build
           else
-            echo "Pas de script build dans package.json -> on saute"
+            echo "Pas de script build -> on saute"
           fi
 
+      # -------- Localiser le dossier à publier (robuste + override) --------
       - name: Localiser le dossier à publier
         id: locate
         shell: bash
         run: |
           set -euo pipefail
-          if   [[ -d dist   ]]; then SRC="dist"
-          elif [[ -d build  ]]; then SRC="build"
-          elif [[ -d public ]]; then SRC="public"
-          else echo "Aucun dossier dist/build/public trouvé" >&2; exit 1; fi
+          OV="${{ github.event.inputs.source_override || '' }}"
+          if [[ -n "$OV" ]]; then
+            SRC="$OV"
+          else
+            for d in dist build public www site static; do
+              if [[ -d "$d" ]]; then SRC="$d"; break; fi
+            done
+          fi
+          # Fallback: racine du repo
+          SRC="${SRC:-.}"
+
           echo "SRC=$SRC" >> "$GITHUB_OUTPUT"
+          echo "### Dossier de publication" >> "$GITHUB_STEP_SUMMARY"
           echo "- SRC: \`$SRC\`" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::group::Aperçu du contenu ($SRC)"
+          ls -la "$SRC" || true
+          echo "::endgroup::"
 
       # -------- DRY-RUN (prévisualisation) --------
       - name: Prévisualisation (DRY-RUN)
@@ -153,16 +163,18 @@ jobs:
         run: |
           aws s3 sync "${{ steps.locate.outputs.SRC }}/" \
             "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" \
-            --dryrun
+            --dryrun \
+            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
 
-      # -------- Écriture réelle S3 --------
+      # -------- Sync réel --------
       - name: Sync vers S3 (écriture réelle)
         if: ${{ steps.pick.outputs.DRYRUN != 'true' }}
         shell: bash
         run: |
           aws s3 sync "${{ steps.locate.outputs.SRC }}/" \
             "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" \
-            --delete
+            --delete \
+            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
 
       # -------- Invalidation CloudFront (optionnel) --------
       - name: Invalidation CloudFront
@@ -173,7 +185,7 @@ jobs:
             --distribution-id "${{ steps.pick.outputs.CF_DIST_ID }}" \
             --paths "/*"
 
-      # -------- Smoke test très simple --------
+      # -------- Smoke test simple --------
       - name: Smoke test (statique)
         shell: bash
         run: |
@@ -181,4 +193,4 @@ jobs:
             echo "DRYRUN -> pas de test distant."
             exit 0
           fi
-          aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}index.html" || true
+          aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" || true
