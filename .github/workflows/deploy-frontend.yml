@@ -6,8 +6,8 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
-      dryrun:
-        description: "Prévisualiser (ne rien écrire) ?"
+      dry_run:
+        description: "DRY_RUN (prévisualisation, n'écrit rien)"
         type: boolean
         default: true
 
@@ -19,12 +19,12 @@ env:
   REGION: eu-west-3
   BUCKET_STAGING: rcvo-transition
   BUCKET_PROD:    rcvo-officiel
-  KEY_PREFIX: ui/   # on déploie sous ce sous-dossier
+  KEY_PREFIX: ui/
+  DRYRUN_DEFAULT: "true"   # sécurité: DRY-RUN par défaut
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
       ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
@@ -32,17 +32,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Choisir rôle / bucket selon la ref
+      - name: Choisir rôle/bucket & DRYRUN
         id: pick
+        shell: bash
         run: |
           REF="${GITHUB_REF}"
           if [[ "$REF" == refs/heads/main || "$REF" == refs/tags/v* ]]; then
-            echo "ROLE=${ROLE_PROD}"         >> "$GITHUB_OUTPUT"
-            echo "BUCKET=${BUCKET_PROD}"     >> "$GITHUB_OUTPUT"
+            ROLE="${ROLE_PROD}";  BUCKET="${BUCKET_PROD}"
           else
-            echo "ROLE=${ROLE_STAGING}"      >> "$GITHUB_OUTPUT"
-            echo "BUCKET=${BUCKET_STAGING}"  >> "$GITHUB_OUTPUT"
+            ROLE="${ROLE_STAGING}"; BUCKET="${BUCKET_STAGING}"
           fi
+          # DRY-RUN: input si présent, sinon valeur par défaut
+          DRY="${{ inputs.dry_run }}"
+          [[ -z "$DRY" ]] && DRY="${DRYRUN_DEFAULT}"
+          echo "ROLE=$ROLE"       >> "$GITHUB_OUTPUT"
+          echo "BUCKET=$BUCKET"   >> "$GITHUB_OUTPUT"
+          echo "DRYRUN=$DRY"      >> "$GITHUB_OUTPUT"
 
       - name: Configurer AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -50,12 +55,10 @@ jobs:
           aws-region: ${{ env.REGION }}
           role-to-assume: ${{ steps.pick.outputs.ROLE }}
 
-      # npm ci uniquement si package.json ET package-lock.json existent
-      - name: Installer deps (si lockfile)
+      - name: Installer deps (si lockfile ET package.json)
         if: ${{ hashFiles('package.json') != '' && hashFiles('package-lock.json') != '' }}
         run: npm ci
 
-      # build uniquement si package.json contient un script "build"
       - name: Build (si script présent)
         if: ${{ hashFiles('package.json') != '' }}
         run: |
@@ -70,34 +73,24 @@ jobs:
         run: |
           set -e
           for D in dist build public out .; do
-            if [ -d "$D" ]; then
-              echo "dir=$D" >> "$GITHUB_OUTPUT"
-              echo "Publier: $D"
-              exit 0
-            fi
+            if [ -d "$D" ]; then echo "dir=$D" >> "$GITHUB_OUTPUT"; exit 0; fi
           done
-          # Si aucun des dossiers ci-dessus n'existe, on publiera la racine
           echo "dir=." >> "$GITHUB_OUTPUT"
-          echo "Publier: ."
 
       - name: Prévisualisation (DRY-RUN)
-        if: ${{ inputs.dryrun }}
+        if: ${{ steps.pick.outputs.DRYRUN == 'true' }}
         run: |
-          echo "DRY-RUN -> n'écrit rien"
+          echo ">>> DRY-RUN: aucune écriture"
           aws s3 sync "${{ steps.dist.outputs.dir }}/" "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" \
             --only-show-errors --exact-timestamps --dryrun
 
       - name: Sync vers S3 (écriture réelle)
-        if: ${{ !inputs.dryrun }}
+        if: ${{ steps.pick.outputs.DRYRUN != 'true' }}
         run: |
           aws s3 sync "${{ steps.dist.outputs.dir }}/" "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" \
             --only-show-errors --exact-timestamps
           echo "Déployé vers s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}"
 
-      # Invalidation CloudFront (désactivée tant qu'on n'a pas d'ID confirmé)
-      # - name: Invalidation CloudFront
-      #   run: aws cloudfront create-invalidation --distribution-id DXXXXXXXX --paths "/*"
-
       - name: Smoke test (statique)
-        if: ${{ !inputs.dryrun }}
+        if: ${{ steps.pick.outputs.DRYRUN != 'true' }}
         run: aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" | head -n 20
