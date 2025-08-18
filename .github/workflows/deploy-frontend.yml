@@ -1,27 +1,15 @@
-name: Déployer le frontend (OIDC)
+name: Deploy Frontend (OIDC)
 
 on:
   push:
-    branches: [ main, staging ]
+    branches: [ main, staging, dev ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
-      force_dryrun:
-        description: "Forcer DRY-RUN (true/false). Vide = auto"
+      dryrun:
+        description: "Prévisualiser le sync S3 (true/false)"
         required: false
-        default: ""
-      bucket_override:
-        description: "Bucket S3 cible (optionnel)"
-        required: false
-        default: ""
-      prefix_override:
-        description: "Préfixe dans le bucket (optionnel)"
-        required: false
-        default: ""
-      source_override:
-        description: "Dossier à publier (ex: dist, build, public, .)"
-        required: false
-        default: ""
+        default: "false"
 
 permissions:
   id-token: write
@@ -29,85 +17,57 @@ permissions:
 
 env:
   REGION: eu-west-3
-  NODE_VERSION: '20'
-
-  # Cibles S3 par défaut
-  BUCKET_STAGING: rcvo-transition
-  PREFIX_STAGING: ui/
-  BUCKET_PROD: rcvo-officiel
-  PREFIX_PROD: ui/
-
-  # Invalidation CloudFront (optionnel)
-  CF_DIST_ID_STAGING: ''
-  CF_DIST_ID_PROD: ''
+  # Rôles OIDC déjà créés côté AWS
+  ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
+  ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
+  # Buckets cibles
+  S3_STAGING: s3://rcvo-transition/ui/
+  S3_PROD:    s3://rcvo-officiel/ui/
+  NODE_VERSION: "20"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
-      ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
 
     steps:
       - uses: actions/checkout@v4
 
-      # -------- Choix rôle/bucket/DRYRUN --------
+      # Choix rôle/bucket/DRYRUN selon la ref
       - name: Choisir rôle/bucket & DRYRUN
         id: pick
         shell: bash
         run: |
           set -euo pipefail
           REF="${GITHUB_REF}"
-
-          FORCE="${{ github.event.inputs.force_dryrun || '' }}"
-          BOVR="${{ github.event.inputs.bucket_override || '' }}"
-          POVR="${{ github.event.inputs.prefix_override || '' }}"
-
           if [[ "$REF" == refs/heads/main || "$REF" == refs/tags/v* ]]; then
-            ROLE="${ROLE_PROD}"
-            BUCKET="${BOVR:-${BUCKET_PROD}}"
-            PREFIX="${POVR:-${PREFIX_PROD}}"
-            CF="${CF_DIST_ID_PROD}"
-            DRYRUN="false"
+            echo "ROLE=${ROLE_PROD}"  >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${S3_PROD}" >> "$GITHUB_OUTPUT"
           else
-            ROLE="${ROLE_STAGING}"
-            BUCKET="${BOVR:-${BUCKET_STAGING}}"
-            PREFIX="${POVR:-${PREFIX_STAGING}}"
-            CF="${CF_DIST_ID_STAGING}"
-            DRYRUN="true"
+            echo "ROLE=${ROLE_STAGING}"  >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${S3_STAGING}" >> "$GITHUB_OUTPUT"
           fi
 
-          # Forçage DRYRUN manuel
-          if [[ -n "$FORCE" ]]; then
-            if [[ "$FORCE" == "true" || "$FORCE" == "false" ]]; then
-              DRYRUN="$FORCE"
-            fi
-          fi
+          # DRYRUN: input > variable de dépôt FRONTEND_DRYRUN > false
+          DRY="${{ github.event.inputs.dryrun || '' }}"
+          if [[ -z "$DRY" ]]; then DRY="${{ vars.FRONTEND_DRYRUN || 'false' }}"; fi
+          [[ "$DRY" == "true" ]] && echo "DRYRUN=true" >> "$GITHUB_OUTPUT" || echo "DRYRUN=false" >> "$GITHUB_OUTPUT"
 
           {
-            echo "ROLE=$ROLE"
-            echo "BUCKET=$BUCKET"
-            echo "PREFIX=$PREFIX"
-            echo "CF_DIST_ID=$CF"
-            echo "DRYRUN=$DRYRUN"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### Ciblage"
+            echo "### deploy summary"
+            echo ""
+            echo "**Ciblage**"
             echo "- REF: \`$REF\`"
-            echo "- ROLE: \`$ROLE\`"
-            echo "- S3: \`s3://$BUCKET/$PREFIX\`"
-            echo "- DRYRUN: \`$DRYRUN\`"
+            echo "- ROLE: \`${{ steps.pick.outputs.ROLE }}\`"
+            echo "- S3: \`${{ steps.pick.outputs.BUCKET }}\`"
+            echo "- DRYRUN: \`${{ steps.pick.outputs.DRYRUN }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # -------- AWS via OIDC --------
       - name: Configurer AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.REGION }}
           role-to-assume: ${{ steps.pick.outputs.ROLE }}
 
-      # -------- Node / build (facultatif) --------
       - name: Installer Node.js
         uses: actions/setup-node@v4
         with:
@@ -118,79 +78,71 @@ jobs:
         run: |
           if [[ -f package.json && -f package-lock.json ]]; then
             npm ci
-          else
-            echo "Pas de package-lock.json ET package.json -> on saute npm ci"
           fi
 
       - name: Build (si script présent)
         shell: bash
         run: |
-          if [[ -f package.json ]] && jq -e '.scripts.build' package.json >/dev/null; then
+          if [[ -f package.json ]] && jq -e '.scripts.build' package.json >/dev/null 2>&1; then
             npm run build
           else
-            echo "Pas de script build -> on saute"
+            echo "Pas de script build: déploiement de fichiers statiques."
           fi
 
-      # -------- Localiser le dossier à publier (robuste + override) --------
       - name: Localiser le dossier à publier
-        id: locate
+        id: src
         shell: bash
         run: |
           set -euo pipefail
-          OV="${{ github.event.inputs.source_override || '' }}"
-          if [[ -n "$OV" ]]; then
-            SRC="$OV"
+          cand=()
+          [[ -d dist   ]] && cand+=(dist)
+          [[ -d build  ]] && cand+=(build)
+          [[ -d public ]] && cand+=(public)
+          [[ -d ui     ]] && cand+=(ui)
+          if [[ ${#cand[@]} -gt 0 ]]; then
+            SRC="${cand[0]}"
           else
-            for d in dist build public www site static; do
-              if [[ -d "$d" ]]; then SRC="$d"; break; fi
-            done
+            SRC="."
           fi
-          # Fallback: racine du repo
-          SRC="${SRC:-.}"
-
           echo "SRC=$SRC" >> "$GITHUB_OUTPUT"
-          echo "### Dossier de publication" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SRC: \`$SRC\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "**Dossier de publication**"
+            echo "- SRC: \`$SRC\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::group::Aperçu du contenu ($SRC)"
-          ls -la "$SRC" || true
-          echo "::endgroup::"
-
-      # -------- DRY-RUN (prévisualisation) --------
       - name: Prévisualisation (DRY-RUN)
-        if: ${{ steps.pick.outputs.DRYRUN == 'true' }}
+        if: steps.pick.outputs.DRYRUN == 'true'
         shell: bash
         run: |
-          aws s3 sync "${{ steps.locate.outputs.SRC }}/" \
-            "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" \
-            --dryrun \
-            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
+          set -euo pipefail
+          aws s3 sync "${{ steps.src.outputs.SRC }}/" "${{ steps.pick.outputs.BUCKET }}" --dryrun \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "node_modules/*" \
+            --exclude ".*" \
+            --exclude "*.md" \
+            --exclude "package*.json" \
+            --delete
 
-      # -------- Sync réel --------
       - name: Sync vers S3 (écriture réelle)
-        if: ${{ steps.pick.outputs.DRYRUN != 'true' }}
+        if: steps.pick.outputs.DRYRUN != 'true'
         shell: bash
         run: |
-          aws s3 sync "${{ steps.locate.outputs.SRC }}/" \
-            "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" \
-            --delete \
-            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
+          set -euo pipefail
+          aws s3 sync "${{ steps.src.outputs.SRC }}/" "${{ steps.pick.outputs.BUCKET }}" \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "node_modules/*" \
+            --exclude ".*" \
+            --exclude "*.md" \
+            --exclude "package*.json" \
+            --delete
 
-      # -------- Invalidation CloudFront (optionnel) --------
-      - name: Invalidation CloudFront
-        if: ${{ steps.pick.outputs.CF_DIST_ID != '' && steps.pick.outputs.DRYRUN != 'true' }}
-        shell: bash
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${{ steps.pick.outputs.CF_DIST_ID }}" \
-            --paths "/*"
-
-      # -------- Smoke test simple --------
       - name: Smoke test (statique)
         shell: bash
         run: |
-          if [[ "${{ steps.pick.outputs.DRYRUN }}" == "true" ]]; then
-            echo "DRYRUN -> pas de test distant."
-            exit 0
-          fi
-          aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ steps.pick.outputs.PREFIX }}" || true
+          set -euo pipefail
+          aws s3 ls "${{ steps.pick.outputs.BUCKET }}index.html" >/dev/null 2>&1 || \
+          aws s3 ls "${{ steps.pick.outputs.BUCKET }}login.html" >/dev/null 2>&1 || \
+          echo "⚠️ Aucun index.html/login.html (OK si le site n'en a pas)."
