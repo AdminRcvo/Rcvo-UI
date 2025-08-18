@@ -1,0 +1,104 @@
+name: Déployer le frontend (OIDC)
+
+on:
+  push:
+    branches: [ main, staging ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  REGION: eu-west-3
+  # Rôles déjà créés (trust policy OK pour rcvo-ui)
+  ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
+  ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
+
+  # Buckets S3 (déjà autorisés dans ta policy)
+  BUCKET_STAGING: rcvo-transition
+  BUCKET_PROD:    rcvo-officiel
+
+  # CloudFront (mets les vrais IDs)
+  DIST_ID_STAGING: CLOUDFRONT_DISTRIB_ID_STAGING
+  DIST_ID_PROD:    CLOUDFRONT_DISTRIB_ID_PROD
+
+  # Build
+  BUILD_DIR: dist   # ou "build" selon ton projet
+  NODE_VERSION: '20'
+
+  # (optionnel) URL de smoke si tu veux éviter -k et tester le vrai domaine
+  SMOKE_URL_STAGING: ""
+  SMOKE_URL_PROD:    ""
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choisir rôle / cibles selon la ref
+        id: pick
+        shell: bash
+        run: |
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == refs/heads/main || "$REF" == refs/tags/v* ]]; then
+            echo "ROLE=${ROLE_PROD}"           >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${BUCKET_PROD}"       >> "$GITHUB_OUTPUT"
+            echo "DIST_ID=${DIST_ID_PROD}"     >> "$GITHUB_OUTPUT"
+            echo "SMOKE_URL=${SMOKE_URL_PROD}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ROLE=${ROLE_STAGING}"           >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${BUCKET_STAGING}"       >> "$GITHUB_OUTPUT"
+            echo "DIST_ID=${DIST_ID_STAGING}"     >> "$GITHUB_OUTPUT"
+            echo "SMOKE_URL=${SMOKE_URL_STAGING}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configurer AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.REGION }}
+          role-to-assume: ${{ steps.pick.outputs.ROLE }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Installer deps
+        run: |
+          if [ -f package-lock.json ]; then npm ci;
+          elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile;
+          elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile;
+          else npm i; fi
+
+      - name: Build
+        run: |
+          if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+            npm run build
+          else
+            echo "Aucun script build — vérifie BUILD_DIR"; exit 1
+          fi
+
+      - name: Sync vers S3 (supprime l’ancien)
+        run: |
+          aws s3 sync "${{ env.BUILD_DIR }}/" "s3://${{ steps.pick.outputs.BUCKET }}/" --delete
+
+      - name: Invalidation CloudFront
+        if: ${{ steps.pick.outputs.DIST_ID != '' && steps.pick.outputs.DIST_ID != 'CLOUDFRONT_DISTRIB_ID_STAGING' && steps.pick.outputs.DIST_ID != 'CLOUDFRONT_DISTRIB_ID_PROD' }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.pick.outputs.DIST_ID }}" \
+            --paths "/*"
+
+      - name: Smoke test (optionnel)
+        if: ${{ steps.pick.outputs.SMOKE_URL != '' }}
+        run: |
+          for i in {1..10}; do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 20 "${{ steps.pick.outputs.SMOKE_URL }}/")
+            echo "HTTP $CODE"
+            [[ $CODE -ge 200 && $CODE -le 308 ]] && exit 0
+            sleep 6
+          done
+          echo "Smoke KO"; exit 1
