@@ -5,6 +5,11 @@ on:
     branches: [ main, staging ]
     tags: [ 'v*' ]
   workflow_dispatch:
+    inputs:
+      dryrun:
+        description: "Prévisualiser (ne rien écrire) ?"
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
@@ -12,15 +17,14 @@ permissions:
 
 env:
   REGION: eu-west-3
-  # ⇩⇩ REMPLACE par tes vrais noms/IDs ⇩⇩
-  BUCKET_STAGING: rcvo-frontend-staging
-  BUCKET_PROD:    rcvo-frontend-prod
-  CF_DIST_STAGING: ""         # ex: E2ABCDEF...
-  CF_DIST_PROD:    ""         # ex: E2ABCDEF...
+  BUCKET_STAGING: rcvo-transition
+  BUCKET_PROD:    rcvo-officiel
+  KEY_PREFIX: ui/   # <- on déploie sous ce sous-dossier, rien d'autre n'est touché
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     env:
       ROLE_STAGING: arn:aws:iam::409818814260:role/RcvoDeployStagingRole
       ROLE_PROD:    arn:aws:iam::409818814260:role/RcvoDeployProdRole
@@ -28,18 +32,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Choisir rôle / cibles selon la ref
+      - name: Choisir rôle / bucket selon la ref
         id: pick
         run: |
           REF="${GITHUB_REF}"
           if [[ "$REF" == refs/heads/main || "$REF" == refs/tags/v* ]]; then
-            echo "ROLE=${ROLE_PROD}"           >> "$GITHUB_OUTPUT"
-            echo "BUCKET=${BUCKET_PROD}"      >> "$GITHUB_OUTPUT"
-            echo "CF_DIST=${CF_DIST_PROD}"    >> "$GITHUB_OUTPUT"
+            echo "ROLE=${ROLE_PROD}"         >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${BUCKET_PROD}"     >> "$GITHUB_OUTPUT"
           else
-            echo "ROLE=${ROLE_STAGING}"       >> "$GITHUB_OUTPUT"
-            echo "BUCKET=${BUCKET_STAGING}"   >> "$GITHUB_OUTPUT"
-            echo "CF_DIST=${CF_DIST_STAGING}" >> "$GITHUB_OUTPUT"
+            echo "ROLE=${ROLE_STAGING}"      >> "$GITHUB_OUTPUT"
+            echo "BUCKET=${BUCKET_STAGING}"  >> "$GITHUB_OUTPUT"
           fi
 
       - name: Configurer AWS (OIDC)
@@ -48,64 +50,47 @@ jobs:
           aws-region: ${{ env.REGION }}
           role-to-assume: ${{ steps.pick.outputs.ROLE }}
 
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-
-      - name: Détecter le dossier frontend
-        id: detect
-        shell: bash
-        run: |
-          set -euo pipefail
-          dir=""
-          if [ -f package.json ]; then dir="."; fi
-          if [ -z "$dir" ] && [ -f frontend/package.json ]; then dir="frontend"; fi
-          if [ -z "$dir" ] && [ -f app/package.json ]; then dir="app"; fi
-          if [ -z "$dir" ]; then
-            found=$(git ls-files '*package.json' | head -n1 || true)
-            if [ -n "$found" ]; then dir=$(dirname "$found"); fi
-          fi
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-          echo "Frontend dir: ${dir:-<aucun>}"
-
+      # Install si lockfile présent (sinon saute)
       - name: Installer deps (si lockfile)
-        if: steps.detect.outputs.dir != ''
-        working-directory: ${{ steps.detect.outputs.dir }}
-        run: |
-          if [ -f package-lock.json ]; then npm ci; else npm i; fi
+        run: if [ -f package-lock.json ]; then npm ci; fi
 
+      # Build si script présent (sinon saute)
       - name: Build (si script présent)
-        if: steps.detect.outputs.dir != ''
-        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
-          if jq -e '.scripts.build' package.json >/dev/null; then
+          if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
             npm run build
           else
-            echo "Pas de script build → on publie tel quel"
+            echo "Pas de script build -> on publiera tel quel"
           fi
 
       - name: Localiser le dossier à publier
-        id: out
-        shell: bash
+        id: dist
         run: |
-          set -euo pipefail
-          dir="${{ steps.detect.outputs.dir }}"
-          candidates=("dist" "build" ".next/out" "out" "public")
-          path=""
-          for c in "${candidates[@]}"; do
-            p="${dir:+$dir/}$c"
-            [ -d "$p" ] && path="$p" && break
-          done
-          [ -z "$path" ] && path="${dir:-.}"
-          echo "path=$path" >> "$GITHUB_OUTPUT"
-          echo "Publish path: $path"
+          if [ -d dist ]; then D=dist;
+          elif [ -d build ]; then D=build;
+          else D=.; fi
+          echo "dir=$D" >> "$GITHUB_OUTPUT"
+          echo "Publier: $D"
 
-      - name: Sync vers S3 (supprime l’ancien)
+      - name: Prévisualisation (DRY-RUN)
+        if: ${{ inputs.dryrun }}
         run: |
-          aws s3 sync "${{ steps.out.outputs.path }}" "s3://${{ steps.pick.outputs.BUCKET }}/" --delete
+          echo "DRY-RUN -> n'écrit rien"
+          aws s3 sync "${{ steps.dist.outputs.dir }}/" "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" \
+            --only-show-errors --exact-timestamps --dryrun
 
-      - name: Invalidation CloudFront
-        if: ${{ steps.pick.outputs.CF_DIST != '' }}
+      - name: Sync vers S3 (écriture réelle)
+        if: ${{ !inputs.dryrun }}
         run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${{ steps.pick.outputs.CF_DIST }}" \
-            --paths "/*"
+          aws s3 sync "${{ steps.dist.outputs.dir }}/" "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" \
+            --only-show-errors --exact-timestamps
+          echo "Contenu déployé vers s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}"
+
+      # (Optionnel) Invalidation CloudFront – désactivé tant qu'on ne connaît pas l'ID
+      # - name: Invalidation CloudFront
+      #   run: aws cloudfront create-invalidation --distribution-id DXXXXXXXX --paths "/*"
+
+      - name: Smoke test (statique)
+        if: ${{ !inputs.dryrun }}
+        run: |
+          aws s3 ls "s3://${{ steps.pick.outputs.BUCKET }}/${{ env.KEY_PREFIX }}" | head -n 20
