@@ -9,7 +9,7 @@ jobs:
   deploy-ui:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write       # OIDC pour assumer un rôle AWS
+      id-token: write
       contents: read
     env:
       EB_APP: Rcvo-UI
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ——— Récupérer le rôle OIDC
+      # Résout le rôle OIDC quel que soit le nom du secret
       - name: Resolve OIDC role
         env:
           A: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -29,12 +29,11 @@ jobs:
         run: |
           ROLE="${A:-${B:-${C:-}}}"
           if [ -z "$ROLE" ]; then
-            echo "❌ Secret manquant: définis AWS_ROLE_TO_ASSUME ou AWS_ROLE_PROD ou ASSISTANT_ROLE_ARN"
+            echo "❌ Ajoute un secret: AWS_ROLE_TO_ASSUME ou AWS_ROLE_PROD ou ASSISTANT_ROLE_ARN"
             exit 1
           fi
           echo "ROLE_TO_ASSUME=$ROLE" >> $GITHUB_ENV
 
-      # ——— Région AWS (priorité à ton secret AWS_REGION, sinon eu-west-3)
       - name: Resolve region
         env:
           R: ${{ secrets.AWS_REGION }}
@@ -47,14 +46,14 @@ jobs:
           role-to-assume: ${{ env.ROLE_TO_ASSUME }}
           aws-region: ${{ env.REGION }}
 
-      # ——— Archive avec un label unique
+      # Archive unique (évite les doublons au re-run)
       - name: Zip UI
         run: |
           APP="rcvo-ui-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
           echo "APP=${APP}" >> $GITHUB_ENV
           zip -r "${APP}.zip" .
 
-      # ——— Upload + Create EB version (idempotent)
+      # Upload & create app version (idempotent)
       - name: Upload & Create EB version (idempotent)
         run: |
           aws s3 cp "${APP}.zip" "s3://${{ env.S3_BUCKET }}/ui/${APP}.zip"
@@ -71,33 +70,31 @@ jobs:
               --version-label "${APP}" \
               --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key="ui/${APP}.zip"
           else
-            echo "⏭️  EB app version '${APP}' existe déjà — skip create."
+            echo "⏭️ Version '${APP}' existe déjà — skip."
           fi
 
-      # ——— Déploiement sur l'environnement Elastic Beanstalk
-      - name: Update EB environment
+      # Un SEUL update-environment (pas de 2e update qui casse l'état Ready)
+      - name: Update EB environment (deploy)
         run: |
           aws elasticbeanstalk update-environment \
             --region "${{ env.REGION }}" \
             --environment-name "${{ env.EB_ENV }}" \
             --version-label "${APP}"
 
-      # ——— Mise à jour des variables d'environnement EB (Admin / JWT)
-      - name: Update EB env variables
+      # Attendre l'état Ready avant toute autre action
+      - name: Wait until environment is Ready
         run: |
-          aws elasticbeanstalk update-environment \
+          aws elasticbeanstalk wait environment-updated \
             --region "${{ env.REGION }}" \
-            --environment-name "${{ env.EB_ENV }}" \
-            --option-settings Namespace=aws:elasticbeanstalk:application:environment,OptionName=RCVO_ADMIN_EMAIL,Value="${{ secrets.RCVO_ADMIN_EMAIL }}" \
-                             Namespace=aws:elasticbeanstalk:application:environment,OptionName=RCVO_ADMIN_PASSWORD,Value="${{ secrets.RCVO_ADMIN_PASSWORD }}" \
-                             Namespace=aws:elasticbeanstalk:application:environment,OptionName=RCVO_JWT_SECRET,Value="${{ secrets.RCVO_JWT_SECRET }}"
+            --environment-names "${{ env.EB_ENV }}"
+          echo "✅ Environment Ready"
 
-      # ——— Vérification rapide
+      # Vérif rapide
       - name: Quick checks
         run: |
           UI_LB=$(aws elasticbeanstalk describe-environments \
             --region "${{ env.REGION }}" \
             --environment-names "${{ env.EB_ENV }}" \
             --query 'Environments[0].EndpointURL' --output text)
-          echo "✅ UI Load Balancer: $UI_LB"
+          echo "UI LB: $UI_LB"
           curl -sI "http://${UI_LB}/" | head -n1 || true
