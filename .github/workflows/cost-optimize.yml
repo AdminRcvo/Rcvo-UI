@@ -4,19 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       tf_dir:
-        description: 'Chemin du code Terraform (ex: backend/terraform/modules/cost-optimizer)'
+        description: 'Chemin du module Terraform (ex: backend/terraform/modules/cost-optimizer)'
         required: false
         default: 'backend/terraform/modules/cost-optimizer'
       private_subnet_id:
-        description: 'ID du subnet privé (si requis par le module)'
+        description: "ID du subnet privé (laisser vide si non requis)"
         required: false
         default: ''
-      aws_region:
-        description: 'Région AWS'
-        required: false
-        default: 'eu-west-3'
       apply:
-        description: 'Mettre true pour appliquer (danger : modifie infra). Par défaut false (plan uniquement).'
+        description: "Mettre à 'true' pour exécuter terraform apply (danger: modifie infra)"
         required: false
         default: 'false'
 
@@ -25,60 +21,76 @@ jobs:
     name: Cost Optimization
     runs-on: ubuntu-latest
     env:
-      TF_INPUT: "false"
+      AWS_REGION: ${{ secrets.AWS_REGION }}
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ inputs.aws_region }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Debug - show working directory & list tf_dir
+      - name: Debug - show repo root and tf_dir
         run: |
-          echo "WORKDIR: $PWD"
-          echo "TF dir (input): ${{ inputs.tf_dir }}"
+          echo "Runner workdir: $(pwd)"
+          echo "Listing repo root:"
+          ls -la
+          echo "tf_dir='${{ inputs.tf_dir }}'"
           if [ -d "${{ inputs.tf_dir }}" ]; then
-            echo "Liste du répertoire ${ { inputs.tf_dir } }:"
+            echo "Contents of tf_dir:"
             ls -la "${{ inputs.tf_dir }}"
           else
-            echo "Répertoire '${{ inputs.tf_dir }}' absent dans le checkout."
+            echo "tf_dir directory not found: ${{ inputs.tf_dir }}"
           fi
 
-      - name: Fail early if module requires private_subnet_id but none provided
-        if: ${{ inputs.private_subnet_id == '' }}
+      - name: Verify tf module exists
+        id: verify
         run: |
-          # Si ton module réclame la variable private_subnet_id il faut la fournir.
-          # On ne force pas l'erreur ici par défaut : décommenter la ligne suivante pour exiger la variable.
-          # echo "Le paramètre 'private_subnet_id' est vide. Renseignez-le pour exécuter le plan." && exit 1
-          echo "private_subnet_id non renseigné — si ton module en a besoin, passe-le dans les inputs."
+          if [ ! -d "${{ inputs.tf_dir }}" ]; then
+            echo "Module introuvable: ${{ inputs.tf_dir }}"
+            exit 1
+          fi
+          echo "found=true"
+          echo "::set-output name=found::true"
+
+      - name: Fail early if module requires private_subnet_id but none provided
+        if: steps.verify.outputs.found == 'true'
+        run: |
+          TFV="${{ inputs.tf_dir }}/variables.tf"
+          if [ -f "$TFV" ] && grep -q 'variable "private_subnet_id"' "$TFV"; then
+            if [ -z "${{ inputs.private_subnet_id }}" ]; then
+              echo "Erreur : le module nécessite la variable 'private_subnet_id'. Renseignez-la pour exécuter le plan."
+              exit 1
+            fi
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.5.0
+          terraform_version: "1.5.0"
 
       - name: Terraform Init & Plan
         working-directory: ${{ inputs.tf_dir }}
         run: |
-          terraform init -input=false
-          # On passe la variable private_subnet_id si fournie (sinon on n'envoie rien)
+          # set variable args only if provided
+          VARS=""
           if [ -n "${{ inputs.private_subnet_id }}" ]; then
-            terraform plan -input=false -var "private_subnet_id=${{ inputs.private_subnet_id }}" -out=tfplan
-          else
-            terraform plan -input=false -out=tfplan
+            VARS="-var=private_subnet_id=${{ inputs.private_subnet_id }}"
           fi
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan $VARS
+        env:
+          TF_IN_AUTOMATION: "1"
 
-      - name: Save plan artifact
+      - name: Upload plan artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-plan
+          name: tfplan
           path: ${{ inputs.tf_dir }}/tfplan
 
       - name: Terraform Apply (only if requested)
@@ -86,7 +98,10 @@ jobs:
         working-directory: ${{ inputs.tf_dir }}
         run: |
           terraform apply -input=false -auto-approve tfplan
+        env:
+          TF_IN_AUTOMATION: "1"
 
-      - name: Notify summary
+      - name: Notify / Summary
         run: |
-          echo "Cost optimize job completed. apply=${{ inputs.apply }}; tf_dir=${{ inputs.tf_dir }}"
+          echo "Cost optimization workflow terminé. apply=${{ inputs.apply }}"
+
