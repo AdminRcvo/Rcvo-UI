@@ -8,100 +8,136 @@ on:
         required: false
         default: 'backend/terraform/modules/cost-optimizer'
       private_subnet_id:
-        description: "ID du subnet privé (laisser vide si non requis)"
+        description: "ID du subnet privé (si le module en a besoin)"
         required: false
         default: ''
       apply:
-        description: "Mettre à 'true' pour exécuter terraform apply (danger: modifie infra)"
+        description: "Mettre à true pour exécuter terraform apply (danger : modifie l'infra)"
         required: false
         default: 'false'
+      aws_region:
+        description: "Région AWS"
+        required: false
+        default: 'eu-west-3'
+
+permissions:
+  contents: read
+  id-token: write     # nécessaire si on utilise OIDC / role-to-assume
 
 jobs:
   cost-optimize:
-    name: Cost Optimization
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_REGION: ${{ inputs.aws_region }}
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Configure AWS credentials
+      - name: Debug - show repo root & tf_dir
+        run: |
+          echo "Repo root: $(pwd)"
+          echo "Listing root:"
+          ls -la
+          echo "tf_dir input: '${{ inputs.tf_dir }}'"
+          echo "Listing tf_dir if exists:"
+          ls -la "${{ inputs.tf_dir }}" || true
+
+      - name: Configure AWS credentials (OIDC / role-to-assume)
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Configure AWS credentials (Access keys)
+        if: ${{ secrets.AWS_ROLE_ARN == '' && secrets.AWS_ACCESS_KEY_ID && secrets.AWS_SECRET_ACCESS_KEY }}
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ inputs.aws_region }}
 
-      - name: Debug - show repo root and tf_dir
+      - name: Fail if no AWS credentials available
+        if: ${{ secrets.AWS_ROLE_ARN == '' && !secrets.AWS_ACCESS_KEY_ID }}
         run: |
-          echo "Runner workdir: $(pwd)"
-          echo "Listing repo root:"
-          ls -la
-          echo "tf_dir='${{ inputs.tf_dir }}'"
-          if [ -d "${{ inputs.tf_dir }}" ]; then
-            echo "Contents of tf_dir:"
-            ls -la "${{ inputs.tf_dir }}"
-          else
-            echo "tf_dir directory not found: ${{ inputs.tf_dir }}"
-          fi
+          echo "AUCUNE CREDENTIEL AWS CONFIGURÉE"
+          echo "Configure either secret AWS_ROLE_ARN (recommended) or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY"
+          exit 1
 
       - name: Verify tf module exists
-        id: verify
         run: |
           if [ ! -d "${{ inputs.tf_dir }}" ]; then
-            echo "Module introuvable: ${{ inputs.tf_dir }}"
+            echo "Erreur : '${{ inputs.tf_dir }}' introuvable dans le repo."
             exit 1
           fi
-          echo "found=true"
-          echo "::set-output name=found::true"
+          # show files
+          ls -la "${{ inputs.tf_dir }}"
 
       - name: Fail early if module requires private_subnet_id but none provided
-        if: steps.verify.outputs.found == 'true'
         run: |
-          TFV="${{ inputs.tf_dir }}/variables.tf"
-          if [ -f "$TFV" ] && grep -q 'variable "private_subnet_id"' "$TFV"; then
-            if [ -z "${{ inputs.private_subnet_id }}" ]; then
-              echo "Erreur : le module nécessite la variable 'private_subnet_id'. Renseignez-la pour exécuter le plan."
-              exit 1
+          if [ -f "${{ inputs.tf_dir }}/variables.tf" ]; then
+            if grep -q 'variable "private_subnet_id"' "${{ inputs.tf_dir }}/variables.tf"; then
+              if [ -z "${{ inputs.private_subnet_id }}" ]; then
+                echo "Le module nécessite la variable 'private_subnet_id' mais aucune valeur n'a été fournie."
+                echo "Renseignez private_subnet_id dans le formulaire ou via workflow run."
+                exit 1
+              else
+                echo "private_subnet_id fourni : ${{ inputs.private_subnet_id }}"
+              fi
+            else
+              echo "variables.tf ne contient pas private_subnet_id -> pas d'obligation."
             fi
+          else
+            echo "variables.tf absent dans le module -> on continue."
           fi
 
-      - name: Setup Terraform
+      - name: Setup Terraform CLI
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: "1.5.0"
+          terraform_version: '1.5.0' # ajuste si besoin
 
       - name: Terraform Init & Plan
+        id: tf_plan
         working-directory: ${{ inputs.tf_dir }}
         run: |
-          # set variable args only if provided
-          VARS=""
-          if [ -n "${{ inputs.private_subnet_id }}" ]; then
-            VARS="-var=private_subnet_id=${{ inputs.private_subnet_id }}"
-          fi
+          set -euo pipefail
+          echo "Terraform init..."
           terraform init -input=false
-          terraform plan -input=false -out=tfplan $VARS
-        env:
-          TF_IN_AUTOMATION: "1"
 
-      - name: Upload plan artifact
-        if: always()
+          echo "Build plan command..."
+          PLAN_CMD="terraform plan -input=false -out=tfplan -no-color"
+
+          if [ -n "${{ inputs.private_subnet_id }}" ]; then
+            # inject var
+            PLAN_CMD="$PLAN_CMD -var 'private_subnet_id=${{ inputs.private_subnet_id }}'"
+          fi
+
+          echo "Running: $PLAN_CMD"
+          eval $PLAN_CMD
+          echo "Plan created at: ${{ inputs.tf_dir }}/tfplan"
+
+      - name: Upload tfplan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: cost-optimize-tfplan
           path: ${{ inputs.tf_dir }}/tfplan
 
       - name: Terraform Apply (only if requested)
         if: ${{ inputs.apply == 'true' }}
         working-directory: ${{ inputs.tf_dir }}
         run: |
-          terraform apply -input=false -auto-approve tfplan
-        env:
-          TF_IN_AUTOMATION: "1"
+          set -euo pipefail
+          echo "Applying plan (apply=true)..."
+          terraform apply -input=false tfplan
 
       - name: Notify / Summary
         run: |
-          echo "Cost optimization workflow terminé. apply=${{ inputs.apply }}"
-
+          echo "Workflow finished. Plan stored as artifact 'cost-optimize-tfplan'."
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            echo "Apply was executed."
+          else
+            echo "Apply was not requested (apply=false)."
+          fi
