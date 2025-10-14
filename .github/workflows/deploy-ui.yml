@@ -3,9 +3,12 @@ name: Déployer l'interface Rcvo (UI) sur Elastic Beanstalk
 on:
   workflow_dispatch:
     inputs:
-      version_label:
-        description: "Version à déployer (facultatif)"
-        required: false
+      env:
+        description: "Environnement EB cible"
+        type: choice
+        required: true
+        default: "prod"
+        options: [prod, staging]
 
 permissions:
   id-token: write
@@ -13,53 +16,112 @@ permissions:
 
 env:
   AWS_REGION: eu-west-3
-  EB_ENV_NAME: Rcvo-UI-prod
-  EB_APP_NAME: Rcvo-UI
-  S3_BUCKET: elasticbeanstalk-eu-west-3-409818814260
+  APP_NAME: Rcvo-UI
+  ENV_PROD: Rcvo-UI-prod
+  ENV_STAGING: Rcvo-UI-staging
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
+      # 1) Auth AWS via OIDC
       - name: Configurer AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: actions/checkout@v4
+      # 2) Récupération du code
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Préparer le package de déploiement
+      # (Optionnel) Si tu veux builder un front (ex: React/Vite) avant empaquetage,
+      # décommente le bloc ci-dessous :
+      #
+      # - name: Build UI si package.json présent
+      #   run: |
+      #     set -e
+      #     if [ -f package.json ]; then
+      #       echo "🧱 Build front…"
+      #       corepack enable || true
+      #       if command -v pnpm >/dev/null 2>&1; then
+      #         pnpm install --frozen-lockfile || pnpm install
+      #         pnpm build || true
+      #       else
+      #         npm ci || npm install
+      #         npm run build || true
+      #       fi
+      #     else
+      #       echo "ℹ️ Aucun package.json à la racine – skip build."
+      #     fi
+
+      # 3) Préparer le ZIP attendu par EB
+      - name: Préparer le bundle ui.zip
         run: |
           set -euo pipefail
+          echo "🧩 Création bundle/ui.zip…"
           mkdir -p bundle
-          zip -qr bundle/ui.zip .platform || true
-          if [ -d "build" ]; then zip -qr bundle/ui.zip build; fi
-          if [ -d "dist" ];  then zip -qr bundle/ui.zip dist;  fi
+          # On zippe tout le repo en excluant ce qui ne doit pas partir
+          zip -qr bundle/ui.zip . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "node_modules/*" \
+            -x "**/*.log" \
+            -x "bundle/*"
+          test -f bundle/ui.zip && echo "✅ bundle/ui.zip OK ($(du -h bundle/ui.zip | cut -f1))"
 
-      - name: Envoyer sur S3 et créer une nouvelle version EB
+      # 4) Pousser sur S3 + créer l'application version EB
+      - name: Créer et publier la version EB
+        id: eb
         run: |
           set -euo pipefail
-          LABEL="${{ inputs.version_label }}"
-          [ -z "$LABEL" ] && LABEL="ui-$(date +%Y%m%d-%H%M%S)"
-          aws s3 cp bundle/ui.zip "s3://${{ env.S3_BUCKET }}/${{ env.EB_APP_NAME }}/$LABEL.zip"
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          S3B="elasticbeanstalk-${AWS_REGION}-${ACC}"
+          VERSION="deploy-${{ github.run_id }}-${{ github.run_attempt }}"
+          KEY="${APP_NAME}/${VERSION}.zip"
+
+          echo "📤 Upload vers s3://${S3B}/${KEY}"
+          aws s3 cp bundle/ui.zip "s3://${S3B}/${KEY}" --only-show-errors
+
+          echo "🆕 create-application-version ${VERSION}"
           aws elasticbeanstalk create-application-version \
-            --application-name "$EB_APP_NAME" \
-            --version-label "$LABEL" \
-            --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key="${{ env.EB_APP_NAME }}/$LABEL.zip"
-          echo "LABEL=$LABEL" >> $GITHUB_ENV
+            --application-name "${APP_NAME}" \
+            --version-label "${VERSION}" \
+            --source-bundle S3Bucket="${S3B}",S3Key="${KEY}" >/dev/null
 
-      - name: Vérifier l’environnement cible
-        run: |
-          aws elasticbeanstalk describe-environments \
-            --environment-names "$EB_ENV_NAME" \
-            --query 'Environments[0].EnvironmentName' --output text
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # 5) Déployer sur l'environnement choisi
       - name: Déployer sur Elastic Beanstalk
         run: |
           set -euo pipefail
-          echo "Déploiement de la version $LABEL sur $EB_ENV_NAME..."
+          if [ "${{ inputs.env }}" = "prod" ]; then
+            ENV_NAME="${ENV_PROD}"
+          else
+            ENV_NAME="${ENV_STAGING}"
+          fi
+
+          VERSION="${{ steps.eb.outputs.version }}"
+          echo "🚀 Déploiement ${VERSION} -> ${ENV_NAME}"
+
           aws elasticbeanstalk update-environment \
-            --environment-name "$EB_ENV_NAME" \
-            --version-label "$LABEL"
+            --environment-name "${ENV_NAME}" \
+            --version-label "${VERSION}" >/dev/null
+
+          echo "⏳ Attente Ready/Green…"
+          for i in $(seq 1 60); do
+            read -r STATUS HEALTH VER URL <<EOF
+          $(aws elasticbeanstalk describe-environments \
+              --environment-names "${ENV_NAME}" \
+              --query 'Environments[0].[Status,Health,VersionLabel,EndpointURL]' \
+              --output text)
+          EOF
+            echo "  - Status=$STATUS Health=$HEALTH Version=$VER"
+            if [ "$STATUS" = "Ready" ] && [ "$HEALTH" = "Green" ]; then
+              echo "✅ Environnement prêt : $URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "⚠️ Timeout d'attente Ready/Green, vérifie la console EB."
+          exit 1
