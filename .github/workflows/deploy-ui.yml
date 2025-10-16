@@ -21,47 +21,38 @@ jobs:
       - name: Configurer AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Préparer le bundle ui.zip
+      - name: Pack (ui.zip)
         run: |
           set -euo pipefail
-          rm -f ui.zip
-          # On zippe tout le repo sauf .git
           zip -qr ui.zip . -x ".git/*"
 
-      - name: Créer et publier la version EB
-        id: create_version
+      - name: Push S3 + créer version EB
+        id: ver
         run: |
           set -euo pipefail
           TS=$(date +%Y%m%d-%H%M%S)
           LABEL="ui-${TS}"
-          S3B="elasticbeanstalk-${AWS_REGION}-$(aws sts get-caller-identity --query Account --output text)"
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          S3B="elasticbeanstalk-${AWS_REGION}-${ACC}"
           S3K="${EB_APP_NAME}/${LABEL}.zip"
-
           aws s3 cp ui.zip "s3://${S3B}/${S3K}"
 
-          # CreateApplicationVersion (idempotent : on ignore "already exists")
-          set +e
-          out=$(aws elasticbeanstalk create-application-version \
-            --application-name "${EB_APP_NAME}" \
-            --version-label "${LABEL}" \
-            --source-bundle S3Bucket="${S3B}",S3Key="${S3K}" 2>&1)
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ] && ! echo "$out" | grep -qi 'already exists'; then
-            echo "$out"; exit $rc
-          fi
+          aws elasticbeanstalk create-application-version \
+            --application-name "$EB_APP_NAME" \
+            --version-label "$LABEL" \
+            --source-bundle S3Bucket="$S3B",S3Key="$S3K" \
+          2>err.log || { grep -q "already exists" err.log || (cat err.log && exit 1); }
 
-          echo "label=${LABEL}" >> $GITHUB_OUTPUT
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
 
-      - name: Déployer sur Elastic Beanstalk
+      - name: Déployer sur EB
         run: |
           set -euo pipefail
           aws elasticbeanstalk update-environment \
-            --environment-name "${EB_ENV_NAME}" \
-            --version-label "${{ steps.create_version.outputs.label }}"
+            --environment-name "${{ env.EB_ENV_NAME }}" \
+            --version-label "${{ steps.ver.outputs.label }}"
