@@ -1,58 +1,105 @@
-name: Déployer l'interface Rcvo (UI) sur Elastic Beanstalk
+name: Deploy UI (OIDC)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  EB_APP_NAME: ${{ secrets.EB_APP_NAME }}
-  EB_ENV_NAME: ${{ secrets.EB_ENV_NAME }}
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Configurer AWS via OIDC
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: eu-west-3
 
-      - uses: actions/checkout@v4
-
-      - name: Pack (ui.zip)
+      - name: Resolve UI environment
+        id: env
+        shell: bash
         run: |
           set -euo pipefail
-          zip -qr ui.zip . -x ".git/*"
+          # pour l'instant: prod uniquement
+          echo "name=Rcvo-UI-prod" >> "$GITHUB_OUTPUT"
 
-      - name: Push S3 + créer version EB
-        id: ver
+      # Build front si besoin (Node). Sinon on zipe tout.
+      - name: Build & archive UI
+        shell: bash
         run: |
           set -euo pipefail
-          TS=$(date +%Y%m%d-%H%M%S)
-          LABEL="ui-${TS}"
+          mkdir -p bundle
+          # Exemple si tu as un build:
+          # npm ci
+          # npm run build
+          # zip -r bundle/ui.zip build .platform
+          # Par défaut: on zipe tout le repo (sans .git)
+          rm -f bundle/ui.zip
+          zip -qr bundle/ui.zip . -x ".git/*"
+
+      - name: Create EB application version
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="Rcvo-UI"
+          LABEL="ui-${{ github.run_id }}-${{ github.run_attempt }}"
           ACC=$(aws sts get-caller-identity --query Account --output text)
-          S3B="elasticbeanstalk-${AWS_REGION}-${ACC}"
-          S3K="${EB_APP_NAME}/${LABEL}.zip"
-          aws s3 cp ui.zip "s3://${S3B}/${S3K}"
+          BUCKET="elasticbeanstalk-eu-west-3-$ACC"
+          KEY="rcvo-ui/${LABEL}.zip"
 
-          aws elasticbeanstalk create-application-version \
-            --application-name "$EB_APP_NAME" \
-            --version-label "$LABEL" \
-            --source-bundle S3Bucket="$S3B",S3Key="$S3K" \
-          2>err.log || { grep -q "already exists" err.log || (cat err.log && exit 1); }
+          aws s3 cp bundle/ui.zip "s3://$BUCKET/$KEY" >/dev/null
+
+          if ! aws elasticbeanstalk describe-application-versions \
+                --application-name "$APP" \
+                --version-labels "$LABEL" \
+                --query 'ApplicationVersions[0].VersionLabel' \
+                --output text | grep -q "$LABEL"; then
+            aws elasticbeanstalk create-application-version \
+              --application-name "$APP" \
+              --version-label "$LABEL" \
+              --source-bundle S3Bucket="$BUCKET",S3Key="$KEY" >/dev/null
+          fi
 
           echo "label=$LABEL" >> "$GITHUB_OUTPUT"
 
-      - name: Déployer sur EB
+      - name: Update EB environment
+        shell: bash
         run: |
           set -euo pipefail
           aws elasticbeanstalk update-environment \
-            --environment-name "${{ env.EB_ENV_NAME }}" \
-            --version-label "${{ steps.ver.outputs.label }}"
+            --environment-name "${{ steps.env.outputs.name }}" \
+            --version-label   "${{ steps.publish.outputs.label }}" >/dev/null
+          echo "Déploiement -> ${{ steps.env.outputs.name }} / ${{ steps.publish.outputs.label }}"
+
+      - name: Wait for Ready/Green
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in {1..90}; do
+            read S H <<<"$(aws elasticbeanstalk describe-environments \
+              --environment-names '${{ steps.env.outputs.name }}' \
+              --query 'Environments[0].[Status,Health]' --output text)"
+            echo "  $i: $S / $H"
+            if [ "$S" = "Ready" ] && [ "$H" = "Green" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "Timeout attente EB"; exit 1
+
+      - name: Smoke test /health
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="http://$(aws elasticbeanstalk describe-environments \
+            --environment-names '${{ steps.env.outputs.name }}' \
+            --query 'Environments[0].CNAME' --output text)"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$URL/health")
+          echo "GET $URL/health -> $code"
+          [ "$code" = "200" ]
